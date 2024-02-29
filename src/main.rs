@@ -1,5 +1,9 @@
+pub mod logic;
+pub mod utils;
+
 use axum::{
     extract::ws::{Message, WebSocket, WebSocketUpgrade},
+    extract::Query,
     response::Response,
     routing::get,
     Router,
@@ -11,16 +15,29 @@ use uuid::Uuid;
 
 #[tokio::main]
 async fn main() {
-    let app = Router::new().route("/ws", get(handler));
+    let app = Router::new().route("/ws", get(ws_handler));
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }
-
-async fn handler(ws: WebSocketUpgrade) -> Response {
-    ws.on_upgrade(handle_socket)
+#[derive(Deserialize, Debug)]
+struct JoinRoomParams {
+    room_id: Option<String>,
+    user_id: String,
+    user_name: String,
+    user_icon: String,
 }
 
-async fn handle_socket(mut socket: WebSocket) {
+async fn ws_handler(
+    Query(params): Query<JoinRoomParams>,
+    ws: WebSocketUpgrade,
+    headers: axum::http::header::HeaderMap,
+) -> Response {
+    println!("{:?}", params);
+    println!("{:?}", headers);
+    ws.on_upgrade(move |socket| handle_socket(socket, params))
+}
+
+async fn handle_socket(mut socket: WebSocket, params: JoinRoomParams) {
     while let Some(msg) = socket.next().await {
         match msg {
             Ok(Message::Close(_)) => {
@@ -51,7 +68,7 @@ async fn handle_message(text: String, socket: &mut WebSocket) {
     if let Ok(message) = parsed_message {
         match message.message_type.as_str() {
             "create_room" => {
-                let room_id = Uuid::new_v4().to_string();
+                let room_id: String = Uuid::new_v4().to_string();
                 let response = json!({
                     "type": "room_created",
                     "room_id": room_id,

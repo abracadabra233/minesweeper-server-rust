@@ -1,8 +1,10 @@
 # 导入必要的库
 import asyncio
-import traceback
-import websockets
 import json
+import traceback
+from urllib.parse import quote_plus, urlencode
+
+import websockets
 
 
 async def send(websocket):
@@ -26,8 +28,20 @@ async def recv(websocket):
 
 
 async def ws_client():
-    uri = "ws://127.0.0.1:3000/ws"
-    async with websockets.connect(uri, subprotocols=["binary"], ping_interval=None) as websocket:
+    user_id = "5555"
+    user_name = "kkkkk"
+    user_icon = "image8888"
+
+    params = {"room_id": "123456", "player": {"user_name": "user01", "user_name": "Alice", "user_icon": "avatarStringBase64"}}
+    params_json = json.dumps(params)
+    encoded_params = urlencode({"params": params_json}, quote_via=quote_plus)
+    uri = f"ws://127.0.0.1:3000/ws?{encoded_params}"
+    headers = {
+        "Authorization": "Basic YWxhZGRpbjpvcGVuc2VzYW1l",
+        "Custom-Header": "Value",
+    }
+
+    async with websockets.connect(uri, subprotocols=["binary"], ping_interval=None, extra_headers=headers) as websocket:
         task1 = asyncio.create_task(send(websocket))
         task2 = asyncio.create_task(recv(websocket))
         await asyncio.gather(task1, task2)
