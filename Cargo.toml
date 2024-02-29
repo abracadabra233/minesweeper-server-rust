@@ -1,0 +1,15 @@
+[package]
+name = "axum_minesweeper"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+axum = { version = "0.7", features = ["ws","default"] }
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+tower = "0.4"
+uuid = { version = "1", features = ["v4"] } # 用于生成唯一的房间ID
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
