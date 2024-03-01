@@ -32,13 +32,13 @@ async def ws_client():
     user_name = "kkkkk"
     user_icon = "image8888"
 
-    params = {"room_id": "123456", "player": {"user_name": "user01", "user_name": "Alice", "user_icon": "avatarStringBase64"}}
-    params_json = json.dumps(params)
-    encoded_params = urlencode({"params": params_json}, quote_via=quote_plus)
-    uri = f"ws://127.0.0.1:3000/ws?{encoded_params}"
+    query_params = f"user_id={user_id}&user_name={user_name}&user_icon={user_icon}"
+    uri = f"ws://127.0.0.1:3000/ws?{query_params}"
     headers = {
         "Authorization": "Basic YWxhZGRpbjpvcGVuc2VzYW1l",
         "Custom-Header": "Value",
+        "user_name": "llllll",
+        "rows": 10,
     }
 
     async with websockets.connect(uri, subprotocols=["binary"], ping_interval=None, extra_headers=headers) as websocket:

@@ -1,3 +1,4 @@
+pub mod neighbors;
 use rand::{distributions::Alphanumeric, Rng};
 pub fn generate_room_id() -> String {
     rand::thread_rng()
