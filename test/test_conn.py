@@ -1,4 +1,5 @@
 # 导入必要的库
+import argparse
 import asyncio
 import json
 import traceback
@@ -7,19 +8,54 @@ from urllib.parse import quote_plus, urlencode
 import websockets
 
 
-async def send(websocket):
-    create_room_msg = json.dumps({"type": "create_room"})
+async def send_create(websocket):
+    create_room_msg = json.dumps(
+        {
+            "type": "InitRoom",
+            "player": {
+                "user_id": "user_id1",
+                "user_name": "user_name1",
+                "user_icon": "user_icon1",
+            },
+            "config": {
+                "cols": 10,
+                "rows": 10,
+                "mines": 16,
+            },
+        }
+    )
     await websocket.send(create_room_msg)
-    asyncio.sleep(500)
-    await websocket.close()
+
+
+async def send_join(websocket):
+    create_room_msg = json.dumps(
+        {
+            "type": "JoinRoom",
+            "room_id": "66666",
+            "player": {
+                "user_id": "user_id2",
+                "user_name": "user_name2",
+                "user_icon": "user_icon2",
+            },
+        }
+    )
+    await websocket.send(create_room_msg)
+
+
+async def send(websocket):
+    if args.flag == "init":
+        await send_create(websocket)
+    else:
+        await send_join(websocket)
+    await asyncio.sleep(500)
 
 
 async def recv(websocket):
     try:
         while True:
             response = await websocket.recv()
-            room_id = json.loads(response).get("room_id")
-            print(f"创建房间响应: {response},{room_id}")
+            # room_id = json.loads(response).get("room_id")
+            print(f"创建房间响应: {response}")
 
     except Exception as e:
         traceback.print_exc()
@@ -48,5 +84,9 @@ async def ws_client():
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--flag", type=str, default="init")
+    args = parser.parse_args()
+
     asyncio.get_event_loop().run_until_complete(ws_client())
     asyncio.get_event_loop().run_forever()
