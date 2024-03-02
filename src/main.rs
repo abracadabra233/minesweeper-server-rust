@@ -1,12 +1,18 @@
 pub mod logic;
 pub mod utils;
 
-use crate::logic::game::ws_handler;
+use crate::logic::game::handle_socket;
+use axum::extract::WebSocketUpgrade;
+use axum::response::Response;
 use axum::{routing::get, Router};
 use env_logger;
 use env_logger::Builder;
 use log::LevelFilter;
 use tokio;
+
+pub async fn ws_handler(ws: WebSocketUpgrade) -> Response {
+    ws.on_upgrade(handle_socket)
+}
 
 #[tokio::main]
 async fn main() {
