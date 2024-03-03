@@ -1,36 +1,41 @@
-use crate::logic::room::Room;
+use crate::logic::board::OpResult;
+use crate::logic::room::{Room, RoomState};
 use crate::utils::generate_room_id;
 use axum::extract::ws::{Message, WebSocket};
 use futures::stream::StreamExt;
+use futures_util::{sink::SinkExt, stream::SplitSink};
 use lazy_static::lazy_static;
 use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio::sync::{broadcast, oneshot, Mutex};
+
+static PLAYER_NUM: usize = 2;
 lazy_static! {
+    // 根据房间id，维护所有的房间
     static ref ROOMS: Mutex<HashMap<String, Room>> = Mutex::new(HashMap::new());
-    static ref ROOMS_SENDERS: Mutex<HashMap<String, broadcast::Sender<String>>> =
+    // 根据房间id，维护所有的房间的消息广播器，用于在一个房间内广播玩家加入，玩家离开，游戏开始，玩家操作结果 信息
+    static ref ROOMS_SENDERS: Mutex<HashMap<String, broadcast::Sender<ResponseModel>>> =
         Mutex::new(HashMap::new());
 }
-use futures_util::{sink::SinkExt, stream::SplitSink};
 
-use super::room::RoomState;
-static PLAYER_NUM: usize = 2;
-
+// 玩家
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Player {
-    pub user_id: String,   //玩家id
-    pub user_name: String, //玩家name
-    pub user_icon: String, //玩家头像，base64
+    pub id: String,   //玩家id
+    pub name: String, //玩家name
+    pub icon: String, //玩家头像，base64字符串
 }
 
+// 玩家操作，玩家点击（x,y）出的格子，f 表示是否是插旗操作
 #[derive(Serialize, Deserialize, Debug, Clone)]
-struct PlayerAction {
+pub struct PlayerAction {
     pub x: usize,
     pub y: usize,
-    pub is_flaged: bool,
+    pub f: bool,
 }
 
+// 游戏设置
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Gconfig {
     pub cols: usize,  // 棋盘宽度
@@ -38,6 +43,7 @@ pub struct Gconfig {
     pub mines: usize, // 雷的总数
 }
 
+// 客户端发送给服务端的消息
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type")]
 enum RequestModel {
@@ -46,25 +52,28 @@ enum RequestModel {
     PlayerAction { player_action: PlayerAction },
 }
 
+// 服务端广播给客户端的消息
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type")]
 enum ResponseModel {
+    // 有新玩家加入
     JoinRoom {
         player: Player,
     },
+    // 该消息不广播，创建的房间id
     InitRoom {
         room_id: String,
     },
+    // 玩家齐了，游戏开始
     GameStart {
         players: Vec<Player>,
         config: Gconfig,
     },
-    GameEnd {
-        success: bool,
-        scores: usize,
-        duration: usize,
-        steps: usize,
+    // 玩家操作后，需要改变的信息
+    GameOpRes {
+        op_res: OpResult,
     },
+    // 游戏异常：玩家离开，房间丢失等
     InvalidRequest {
         error: String,
     },
@@ -121,14 +130,31 @@ pub async fn handle_socket(socket: WebSocket) {
     }
 }
 
-async fn broadcast_action(mut br_recver: broadcast::Receiver<String>, mut ws_sender: WsSender) {
-    while let Ok(message) = br_recver.recv().await {
-        debug!("Broadcasting message: '{}' ", message);
-        ws_sender.send(Message::Text(message)).await.unwrap();
+async fn broadcast_action(
+    mut br_recver: broadcast::Receiver<ResponseModel>,
+    mut ws_sender: WsSender,
+) {
+    while let Ok(respose) = br_recver.recv().await {
+        debug!("Broadcasting message: '{:?}' ", respose);
+        let respose_mes = serde_json::to_string(&respose).unwrap();
+        ws_sender.send(Message::Text(respose_mes)).await.unwrap();
     }
 }
 
-async fn handle_action(room_id: &String, player_action: &PlayerAction) {}
+async fn handle_action(room_id: &String, action: &PlayerAction) {
+    let mut rooms = ROOMS.lock().await;
+    let mut rooms_senders = ROOMS_SENDERS.lock().await;
+    let br_sender = rooms_senders.get_mut(room_id).unwrap();
+
+    if let Some(room) = rooms.get_mut(room_id) {
+        let op_res = room.game_state.op(action.x, action.y, action.f);
+        let _ = br_sender.send(ResponseModel::GameOpRes { op_res });
+    } else {
+        let _ = br_sender.send(ResponseModel::InvalidRequest {
+            error: format!("Room {} does not exist", room_id),
+        });
+    }
+}
 
 async fn init_room(ws_sender: &mut WsSender, config: &Gconfig) -> String {
     let room_id = generate_room_id();
@@ -170,17 +196,15 @@ async fn join_room(mut ws_sender: WsSender, room_id: &String, player: &Player) {
         match rx.await {
             Ok(_) => {
                 // 广播新玩家加入房间
-                let respose = ResponseModel::JoinRoom {
+                let _ = br_sender.send(ResponseModel::JoinRoom {
                     player: player.clone(),
-                };
-                let _ = br_sender.send(serde_json::to_string(&respose).unwrap());
+                });
                 // 广播游戏开始，游戏初始化数据
                 if room_state == RoomState::Gameing {
-                    let respose = ResponseModel::GameStart {
+                    let _ = br_sender.send(ResponseModel::GameStart {
                         players: room.players.clone(),
                         config: room.gconfig.clone(),
-                    };
-                    let _ = br_sender.send(serde_json::to_string(&respose).unwrap());
+                    });
                 }
             }
             _ => (),

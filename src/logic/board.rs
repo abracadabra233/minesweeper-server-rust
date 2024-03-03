@@ -22,6 +22,112 @@ pub struct GameBoard {
     pub cor_n_marks: usize,               // 用户正确标记的个数
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CellInfo {
+    pub x: usize,
+    pub y: usize,
+    pub status: CellState,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum OpResult {
+    Success(Vec<CellInfo>), // 操作成功，返回操作影响的cell信息
+    GameOver,               // 游戏失败，踩到雷
+    GameWon,                // 游戏胜利
+}
+
+impl GameBoard {
+    pub fn op(&mut self, x: usize, y: usize, is_flaged: bool) -> OpResult {
+        match self.cell_states[x][y] {
+            CellState::Closed => match is_flaged {
+                true => self.mark_cell(x, y),
+                false => self.open_cell(x, y),
+            },
+            CellState::Marked => self.cancel_mark_cell(x, y),
+            CellState::Opened => {
+                if self.around_mines[x][y] == self.around_marks[x][y] {
+                    self.open_around_cell(x, y)
+                } else {
+                    OpResult::Success(vec![])
+                }
+            }
+        }
+    }
+    pub fn open_around_cell(&mut self, x: usize, y: usize) -> OpResult {
+        let mut op_results = vec![];
+        let neighbors: Neighbors = Neighbors::new(x, y, self.rows, self.cols);
+        for (drow, dcol) in neighbors {
+            match self.cell_states[drow][dcol] {
+                CellState::Closed => {
+                    let op_res = self.open_cell(drow, dcol);
+                    match op_res {
+                        OpResult::Success(cell_infos) => op_results.extend(cell_infos),
+                        OpResult::GameWon | OpResult::GameOver => return op_res,
+                    }
+                }
+                _ => {}
+            };
+        }
+        OpResult::Success(op_results)
+    }
+    pub fn cancel_mark_cell(&mut self, x: usize, y: usize) -> OpResult {
+        self.cell_states[x][y] = CellState::Closed;
+        self.n_marks -= 1;
+        if self.mine_states[x][y] {
+            self.cor_n_marks -= 1;
+        }
+
+        let neighbors: Neighbors = Neighbors::new(x, y, self.rows, self.cols);
+        for (drow, dcol) in neighbors {
+            self.around_marks[drow][dcol] -= 1;
+        }
+
+        OpResult::Success(vec![CellInfo {
+            x,
+            y,
+            status: CellState::Closed,
+        }])
+    }
+    pub fn mark_cell(&mut self, x: usize, y: usize) -> OpResult {
+        self.cell_states[x][y] = CellState::Marked;
+        self.n_marks += 1;
+        if self.mine_states[x][y] {
+            self.cor_n_marks += 1;
+        }
+
+        let neighbors: Neighbors = Neighbors::new(x, y, self.rows, self.cols);
+        for (drow, dcol) in neighbors {
+            self.around_marks[drow][dcol] += 1;
+        }
+
+        OpResult::Success(vec![CellInfo {
+            x,
+            y,
+            status: CellState::Marked,
+        }])
+    }
+    pub fn open_cell(&mut self, x: usize, y: usize) -> OpResult {
+        if self.mine_states[x][y] {
+            return OpResult::GameOver;
+        }
+        self.cell_states[x][y] = CellState::Opened;
+
+        let mut op_results = vec![];
+        if self.around_marks[x][y] == 0 {
+            let op_res = self.open_around_cell(x, y);
+            match op_res {
+                OpResult::Success(cell_infos) => op_results.extend(cell_infos),
+                OpResult::GameWon | OpResult::GameOver => {}
+            }
+        }
+        OpResult::Success(op_results)
+    }
+}
+
+// 这是一个rust实现的多人在线扫雷的核心逻辑，请通过增加结构体或是修改函数实现，帮我完善以下逻辑：1.op函数表示用户点击x，y出的格子，is_flaged表示是否是进行插旗操作，这个函数应该返回用户这次操作后，旗子上哪些cell的状态会发送改变，或者是游戏结束（失败或成功，成功需返回相应的信息），请将上述返回的信息封装在一个 enum 中 ，并返回
+
+// 这是一个rust实现的多人在线扫雷的服务端，请根据上面的注释优化上述代码，并给出优化建议，包括但不限于以下方面：1. 变量函数命名；2. 逻辑。 还给出一些你认为需要优化的地方
+
 impl GameBoard {
     pub fn new(cols: usize, rows: usize, mines: usize) -> GameBoard {
         let mut board = GameBoard {
@@ -36,6 +142,8 @@ impl GameBoard {
             cor_n_marks: 0,
         };
         board.place_mines();
+        // dbg!(&board.around_mines);
+        dbg!(&board.mine_states);
         board
     }
     fn place_mines(&mut self) {
@@ -66,72 +174,5 @@ impl GameBoard {
                 }
             }
         }
-    }
-}
-
-impl GameBoard {
-    pub fn op(&mut self, x: usize, y: usize, is_flaged: bool) -> bool {
-        match self.cell_states[x][y] {
-            CellState::Closed => match is_flaged {
-                true => self.mark_cell(x, y),
-                false => self.open_cell(x, y),
-            },
-            CellState::Marked => self.cancel_mark_cell(x, y),
-            CellState::Opened => {
-                self.around_mines[x][y] == self.around_marks[x][y] && self.open_around_cell(x, y)
-            }
-        }
-    }
-    pub fn open_around_cell(&mut self, x: usize, y: usize) -> bool {
-        let neighbors: Neighbors = Neighbors::new(x, y, self.rows, self.cols);
-        for (drow, dcol) in neighbors {
-            let op_res = match self.cell_states[drow][dcol] {
-                CellState::Closed => self.open_cell(drow, dcol),
-                _ => true,
-            };
-            if !op_res {
-                return false;
-            };
-        }
-        true
-    }
-    pub fn cancel_mark_cell(&mut self, x: usize, y: usize) -> bool {
-        self.cell_states[x][y] = CellState::Closed;
-        self.n_marks -= 1;
-        if self.mine_states[x][y] {
-            self.cor_n_marks -= 1;
-        }
-
-        let neighbors: Neighbors = Neighbors::new(x, y, self.rows, self.cols);
-        for (drow, dcol) in neighbors {
-            self.around_marks[drow][dcol] -= 1;
-        }
-        true
-    }
-    pub fn mark_cell(&mut self, x: usize, y: usize) -> bool {
-        self.cell_states[x][y] = CellState::Marked;
-        self.n_marks += 1;
-        if self.mine_states[x][y] {
-            self.cor_n_marks += 1;
-        }
-
-        let neighbors: Neighbors = Neighbors::new(x, y, self.rows, self.cols);
-        for (drow, dcol) in neighbors {
-            self.around_marks[drow][dcol] += 1;
-        }
-        true
-    }
-    pub fn open_cell(&mut self, x: usize, y: usize) -> bool {
-        if self.mine_states[x][y] {
-            return false; // 游戏结束
-        }
-        self.cell_states[x][y] = CellState::Opened;
-        if self.around_marks[x][y] == 0 {
-            let op_res = self.open_around_cell(x, y);
-            if !op_res {
-                return false;
-            };
-        }
-        true
     }
 }
