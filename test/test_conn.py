@@ -34,9 +34,9 @@ def on_open(ws):
                 {
                     "type": "InitRoom",
                     "player": {
-                        "user_id": "user_id1",
-                        "user_name": "user_name1",
-                        "user_icon": "user_icon1",
+                        "id": "id",
+                        "name": "name",
+                        "icon": "icon",  # 玩家头像的base64编码
                     },
                     "config": {
                         "cols": 10,

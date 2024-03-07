@@ -30,6 +30,7 @@ pub struct CellInfo {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(tag = "type")]
 pub enum OpResult {
     Success(Vec<CellInfo>), // 操作成功，返回操作影响的cell信息
     GameOver,               // 游戏失败，踩到雷
@@ -143,7 +144,7 @@ impl GameBoard {
         };
         board.place_mines();
         // dbg!(&board.around_mines);
-        dbg!(&board.mine_states);
+        // dbg!(&board.mine_states);
         board
     }
     fn place_mines(&mut self) {

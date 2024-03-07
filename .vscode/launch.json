@@ -1,0 +1,15 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug Rust",
+            "program": "${fileDirname}/../target/debug/axum_minesweeper",
+            "args": [],
+            "cwd": "${fileDirname}/..",
+            "preLaunchTask": "cargo build", // 确保在调试前构建
+            "sourceLanguages": ["rust"]
+        }
+    ]
+}

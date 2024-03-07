@@ -8,6 +8,7 @@ use axum::{routing::get, Router};
 use env_logger;
 use env_logger::Builder;
 use log::LevelFilter;
+use std::io::Write;
 use tokio;
 
 pub async fn ws_handler(ws: WebSocketUpgrade) -> Response {
@@ -18,7 +19,17 @@ pub async fn ws_handler(ws: WebSocketUpgrade) -> Response {
 async fn main() {
     // 初始化日志系统
     Builder::new()
-        .filter_level(LevelFilter::Debug) // 设置全局日志级别为Info
+        .filter_level(LevelFilter::Info)
+        .format(|buf, record| {
+            writeln!(
+                buf,
+                "[{}:{}][{}] - {}",
+                record.file().unwrap_or("unknown"),
+                record.line().unwrap_or(0),
+                record.level(),
+                record.args()
+            )
+        })
         .init();
 
     let app = Router::new().route("/ws", get(ws_handler));
