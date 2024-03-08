@@ -1,10 +1,20 @@
 pub mod neighbors;
-use rand::{distributions::Alphanumeric, Rng};
+// use rand::{distributions::Alphanumeric, Rng};
 pub fn generate_room_id() -> String {
-    return "66666".to_string();
+    "66666".to_string()
     // rand::thread_rng()
     //     .sample_iter(&Alphanumeric)
     //     .take(6)
     //     .map(char::from)
     //     .collect()
+}
+
+pub fn show_matrix<T: std::fmt::Display>(matrix: &[Vec<T>], name: &str) {
+    println!("============= {} =============", name);
+    for row in matrix {
+        for item in row.iter() {
+            print!("{}\t", item);
+        }
+        println!();
+    }
 }

@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio::sync::{broadcast, oneshot, Mutex};
 
-pub static PLAYER_NUM: usize = 3;
+pub static PLAYER_NUM: usize = 1;
 
 lazy_static! {
     // 根据房间id，维护所有的房间
@@ -229,6 +229,7 @@ async fn join_room(mut ws_sender: WsSender, room_id: &String, player: &Player) -
             broadcast_action(br_recver, ws_sender).await
         });
         if rx.await.is_ok() && room_state == RoomState::Gameing {
+            info!("{room_id} | Broadcast | GameStart ");
             let _ = br_sender.send(ResponseModel::GameStart {
                 config: room.gconfig.clone(),
             });
