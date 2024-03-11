@@ -1,5 +1,5 @@
 use super::board::GameBoard;
-use super::game::{Gconfig, Player, PLAYER_NUM};
+use super::game::{Gconfig, Player};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -31,7 +31,7 @@ impl Room {
 
     pub fn add_player(&mut self, player: Player) -> RoomState {
         self.players.push(player);
-        if self.players.len() == PLAYER_NUM {
+        if self.players.len() == self.gconfig.n_player {
             self.room_state = RoomState::Gameing;
         }
         self.room_state

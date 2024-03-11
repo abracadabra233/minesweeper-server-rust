@@ -10,8 +10,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio::sync::{broadcast, oneshot, Mutex};
 
-pub static PLAYER_NUM: usize = 1;
-
 lazy_static! {
     // 根据房间id，维护所有的房间
     static ref ROOMS: Mutex<HashMap<String, Room>> = Mutex::new(HashMap::new());
@@ -42,6 +40,12 @@ pub struct Gconfig {
     pub cols: usize,  // 棋盘宽度
     pub rows: usize,  // 棋盘高度
     pub mines: usize, // 雷的总数
+    #[serde(default = "default_n_player")]
+    pub n_player: usize, // 房间人数
+}
+
+fn default_n_player() -> usize {
+    2
 }
 
 // 客户端发送给服务端的消息
@@ -185,7 +189,7 @@ async fn init_room(config: &Gconfig) -> String {
     let mut rooms = ROOMS.lock().await;
     rooms.insert(room_id.clone(), room);
 
-    let (br_sender, _) = broadcast::channel(PLAYER_NUM);
+    let (br_sender, _) = broadcast::channel(config.n_player);
     let mut rooms_senders = ROOMS_SENDERS.lock().await;
     rooms_senders.insert(room_id.to_string(), br_sender);
     room_id
