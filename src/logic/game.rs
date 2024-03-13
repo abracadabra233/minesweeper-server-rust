@@ -8,6 +8,7 @@ use lazy_static::lazy_static;
 use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fmt;
 use tokio::sync::{broadcast, oneshot, Mutex};
 
 lazy_static! {
@@ -19,11 +20,16 @@ lazy_static! {
 }
 
 // 玩家
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Player {
     pub id: String,   // 玩家id
     pub name: String, // 玩家name
     pub icon: String, // 玩家头像，base64字符串
+}
+impl fmt::Debug for Player {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Player {{ id: {}, name: {} }}", self.id, self.name)
+    }
 }
 
 // 玩家操作，玩家点击（x,y）出的格子，f 表示是否是插旗操作
@@ -132,7 +138,7 @@ pub async fn handle_socket(socket: WebSocket) {
                     }
                     Ok(RequestModel::GAction { action }) => match (&cur_room_id, &cur_player) {
                         (Some(room_id), Some(player)) => {
-                            info!("{room_id} | Request | GAction, {player:?}, {action:?}");
+                            info!("{room_id} | Request | GAction, {}, {action:?}", player.id);
                             handle_action(room_id, player, &action).await;
                         }
                         _ => {}
@@ -161,12 +167,13 @@ pub async fn handle_socket(socket: WebSocket) {
     }
 }
 
-async fn broadcast_action(mut br_recver: BrRecver, mut ws_sender: WsSender) {
+async fn broadcast_action(room_id: String, mut br_recver: BrRecver, mut ws_sender: WsSender) {
     while let Ok(response) = br_recver.recv().await {
         let resp_body = serde_json::to_string(&response).unwrap();
         let _ = ws_sender.send(Message::Text(resp_body)).await;
     }
     let _ = ws_sender.close().await;
+    info!("{room_id:?} | Info | release resource");
 }
 
 async fn handle_action(room_id: &String, player: &Player, action: &GAction) {
@@ -228,12 +235,14 @@ async fn join_room(mut ws_sender: WsSender, room_id: &String, player: &Player) -
         let room_state = room.add_player(player.clone());
         let br_recver = br_sender.subscribe();
         let (tx, rx) = oneshot::channel();
+        let c_room_id = room_id.clone();
         tokio::spawn(async move {
             let _ = tx.send(1);
-            broadcast_action(br_recver, ws_sender).await
+            broadcast_action(c_room_id, br_recver, ws_sender).await
         });
         if rx.await.is_ok() && room_state == RoomState::Gameing {
-            info!("{room_id} | Broadcast | GameStart ");
+            info!("{room_id} | Broadcast | GameStart | {0:?}", room.gconfig);
+            room.game_state.game_start();
             let _ = br_sender.send(ResponseModel::GameStart {
                 config: room.gconfig.clone(),
             });

@@ -1,15 +1,14 @@
 use super::board::GameBoard;
 use super::game::{Gconfig, Player};
-use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RoomState {
     Waiting,
     Gameing,
     Logout,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Debug, Clone)]
 pub struct Room {
     pub room_id: String,
     pub players: Vec<Player>,
