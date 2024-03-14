@@ -221,20 +221,17 @@ impl GameBoard {
 
     fn place_mines(&mut self, first_x: usize, first_y: usize) {
         let not_mine: Neighbors = Neighbors::new(first_x, first_y, self.rows, self.cols);
-        let mut not_mine: HashSet<_> = not_mine.map(|(a, b)| a * b).collect();
-        not_mine.insert(first_x * first_y);
+        let mut not_mine: HashSet<_> = not_mine.map(|(a, b)| (a, b)).collect();
+        not_mine.insert((first_x, first_y));
 
-        let all_positions: HashSet<_> = (0..self.rows * self.cols).collect();
+        let all_positions: HashSet<(usize, usize)> = (0..self.rows)
+            .flat_map(|row| (0..self.cols).map(move |col| (row, col)))
+            .collect();
         let mut may_mine: Vec<_> = all_positions.difference(&not_mine).cloned().collect();
-        let mut rng = rand::thread_rng();
-        may_mine.shuffle(&mut rng);
+        may_mine.shuffle(&mut rand::thread_rng());
 
-        let may_mine: Vec<_> = may_mine.iter().take(self.mines).collect();
-        for &pos in may_mine {
-            let row = pos / self.cols;
-            let col = pos % self.cols;
+        for &(row, col) in may_mine.iter().take(self.mines) {
             self.mine_states[row][col] = true;
-
             let neighbors: Neighbors = Neighbors::new(row, col, self.rows, self.cols);
             for (drow, dcol) in neighbors {
                 self.around_mines[drow][dcol] += 1;

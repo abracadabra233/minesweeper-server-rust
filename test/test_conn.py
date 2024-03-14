@@ -72,7 +72,10 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     websocket.enableTrace(True)
-    ws = websocket.WebSocketApp(
-        "ws://abracadabra.v2.idcfengye.com/ws", on_open=on_open, on_message=on_message, on_error=on_error, on_close=on_close
-    )
+    url = "ws://abracadabra.v2.idcfengye.com/ws"
+    url = "wss://lvpy.chailab.cn:33000/ws/mpm/ws"
+    url = "ws://10.4.208.55:30081"
+    url = "ws://10.4.208.55:8003/mpm"
+    url = "wss://lvpy.chailab.cn:33000/mpm"
+    ws = websocket.WebSocketApp(url, on_open=on_open, on_message=on_message, on_error=on_error, on_close=on_close)
     ws.run_forever()
