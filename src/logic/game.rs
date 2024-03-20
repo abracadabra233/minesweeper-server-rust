@@ -22,19 +22,25 @@ lazy_static! {
 // 玩家
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Player {
-    pub id: String,   // 玩家id
-    pub name: String, // 玩家name
-    pub icon: String, // 玩家头像，base64字符串
+    pub id: String,     // 玩家id
+    pub name: String,   // 玩家name
+    pub icon: String,   // 玩家头像，base64字符串
+    pub is_ready: bool, // 玩家状态
 }
+
 impl fmt::Debug for Player {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Player {{ id: {}, name: {} }}", self.id, self.name)
+        write!(
+            f,
+            "Player {{ id: {}, name: {}, is_ready:{} }}",
+            self.id, self.name, self.is_ready
+        )
     }
 }
 
 // 玩家操作，玩家点击（x,y）出的格子，f 表示是否是插旗操作
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct GAction {
+pub struct GameAction {
     pub x: usize,
     pub y: usize,
     pub f: bool,
@@ -42,7 +48,7 @@ pub struct GAction {
 
 // 游戏设置
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct Gconfig {
+pub struct GameConfig {
     pub cols: usize,  // 棋盘宽度
     pub rows: usize,  // 棋盘高度
     pub mines: usize, // 雷的总数
@@ -58,40 +64,23 @@ fn default_n_player() -> usize {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type")]
 enum RequestModel {
-    InitRoom { player: Player, config: Gconfig },
-    JoinRoom { room_id: String, player: Player },
-    GAction { action: GAction },
+    RoomCreate { player: Player, config: GameConfig }, // 玩家创建房间
+    RoomJoin { room_id: String, player: Player },      // 玩家加入房间
+    PlayerOperation { action: GameAction },            // 玩家操作
+    PlayerStatusSet { is_ready: bool },                // 准备、取消准备
 }
 
 // 服务端广播给客户端的消息
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type")]
 enum ResponseModel {
-    // 该消息不广播，玩家加入前，有哪些玩家
-    JoinSuccess {
-        players: Vec<Player>,
-        room_id: String,
-    },
-    // 广播新玩家加入
-    PlayerJoin {
-        player: Player,
-    },
-    // 广播新玩家离开
-    PlayerLeave {
-        player_id: String,
-    },
-    // 玩家齐了，游戏开始
-    GameStart {
-        config: Gconfig,
-    },
-    // 玩家操作后，需要改变的信息
-    GameOpRes {
-        op_res: OpResult,
-    },
-    // 游戏异常：玩家离开，房间丢失等
-    InvalidRequest {
-        error: String,
-    },
+    JoinSuccess { players: Vec<Player>, room_id: String }, // 不广播，玩家加入成功
+    PlayerJoin { player: Player },                         // 广播新玩家加入
+    PlayerLeft { player_id: String },                      // 广播新玩家离开
+    PlayerStatusSet { player_id: String, is_ready: bool }, // 玩家准备取消准备
+    GameStart { config: GameConfig },                      // 玩家齐了，游戏开始
+    GameOpRes { op_res: OpResult },                        // 玩家操作后，需要改变的信息
+    InvalidRequest { error: String },                      // 游戏异常：玩家离开，房间丢失等
 }
 
 type WsSender = SplitSink<WebSocket, Message>;
@@ -113,7 +102,7 @@ pub async fn handle_socket(socket: WebSocket) {
                 let message = message.into_text().unwrap();
                 let request_model: Result<RequestModel, _> = serde_json::from_str(&message);
                 match request_model {
-                    Ok(RequestModel::InitRoom { player, config }) => {
+                    Ok(RequestModel::RoomCreate { player, config }) => {
                         if let Some(ws_sender) = ws_sr.take() {
                             info!("None | Request | InitRoom, {player:?}, {config:?}");
                             let room_id = init_room(&config).await;
@@ -125,7 +114,7 @@ pub async fn handle_socket(socket: WebSocket) {
                             }
                         }
                     }
-                    Ok(RequestModel::JoinRoom { room_id, player }) => {
+                    Ok(RequestModel::RoomJoin { room_id, player }) => {
                         if let Some(ws_sender) = ws_sr.take() {
                             info!("{room_id} | Request | JoinRoom, {player:?}");
                             if join_room(ws_sender, &room_id, &player).await {
@@ -136,12 +125,19 @@ pub async fn handle_socket(socket: WebSocket) {
                             }
                         }
                     }
-                    Ok(RequestModel::GAction { action }) => match (&cur_room_id, &cur_player) {
+                    Ok(RequestModel::PlayerOperation { action }) => match (&cur_room_id, &cur_player) {
                         (Some(room_id), Some(player)) => {
                             info!("{room_id} | Request | GAction, {}, {action:?}", player.id);
                             handle_action(room_id, player, &action).await;
                         }
-                        _ => {}
+                        _ => error!("Error | Room {cur_room_id:?} or Player {cur_player:?} loss"),
+                    },
+                    Ok(RequestModel::PlayerStatusSet { is_ready }) => match (&cur_room_id, &cur_player) {
+                        (Some(room_id), Some(player)) => {
+                            info!("{room_id} | Request | PlayerStatusSet, {},{is_ready}", player.id);
+                            set_player_status(room_id, &player.id, is_ready).await;
+                        }
+                        _ => error!("Error | Room {cur_room_id:?} or Player {cur_player:?} loss"),
                     },
                     Err(e) => {
                         warn!("{cur_room_id:?} | Warn | Parsing message:{e}");
@@ -176,12 +172,37 @@ async fn broadcast_action(room_id: String, mut br_recver: BrRecver, mut ws_sende
     info!("{room_id:?} | Info | release resource");
 }
 
-async fn handle_action(room_id: &String, player: &Player, action: &GAction) {
+async fn set_player_status(room_id: &String, player_id: &String, is_ready: bool) {
     let mut rooms = ROOMS.lock().await;
     let mut rooms_senders = ROOMS_SENDERS.lock().await;
 
     if let Some(room) = rooms.get_mut(room_id) {
-        let op_res = room.game_state.op(action.x, action.y, action.f);
+        let op_res = room.game_board.op(action.x, action.y, action.f);
+        info!("{room_id} | Broadcast | PlayerStatusSet, {action:?}, {op_res:?}");
+        let br_sender = rooms_senders.get_mut(room_id).unwrap();
+        let _ = br_sender.send(ResponseModel::PlayerStatusSet {
+            player_id: player_id.clone(),
+            is_ready,
+        });
+
+        if rx.await.is_ok() && room_state == RoomState::Gameing {
+            info!("{room_id} | Broadcast | GameStart | {0:?}", room.gconfig);
+            room.game_board.game_start();
+            let _ = br_sender.send(ResponseModel::GameStart {
+                config: room.gconfig.clone(),
+            });
+        }
+    } else {
+        error!("{room_id:?} | Error | Room does not exist while {player_id:?} gaming");
+    }
+}
+
+async fn handle_action(room_id: &String, player: &Player, action: &GameAction) {
+    let mut rooms = ROOMS.lock().await;
+    let mut rooms_senders = ROOMS_SENDERS.lock().await;
+
+    if let Some(room) = rooms.get_mut(room_id) {
+        let op_res = room.game_board.op(action.x, action.y, action.f);
         info!("{room_id} | Broadcast | GameOpRes, {action:?}, {op_res:?}");
         let br_sender = rooms_senders.get_mut(room_id).unwrap();
         let _ = br_sender.send(ResponseModel::GameOpRes { op_res });
@@ -190,7 +211,7 @@ async fn handle_action(room_id: &String, player: &Player, action: &GAction) {
     }
 }
 
-async fn init_room(config: &Gconfig) -> String {
+async fn init_room(config: &GameConfig) -> String {
     let room_id: String = generate_room_id();
     let room = Room::new(room_id.clone(), config.clone());
     let mut rooms = ROOMS.lock().await;
@@ -205,7 +226,7 @@ async fn init_room(config: &Gconfig) -> String {
 async fn join_room(mut ws_sender: WsSender, room_id: &String, player: &Player) -> bool {
     let mut rooms = ROOMS.lock().await;
     if let Some(room) = rooms.get_mut(room_id) {
-        if RoomState::Gameing == room.room_state {
+        if room.is_full() {
             let err_mes = format!("Room {} is already full,{:?}", room_id, player);
             info!("{room_id} | Response | InvalidRequest, {err_mes:?}");
             let error_mes = ResponseModel::InvalidRequest { error: err_mes };
@@ -232,21 +253,9 @@ async fn join_room(mut ws_sender: WsSender, room_id: &String, player: &Player) -
         });
 
         // Add the new player to the current room
-        let room_state = room.add_player(player.clone());
+        room.add_player(player.clone());
         let br_recver = br_sender.subscribe();
-        let (tx, rx) = oneshot::channel();
-        let c_room_id = room_id.clone();
-        tokio::spawn(async move {
-            let _ = tx.send(1);
-            broadcast_action(c_room_id, br_recver, ws_sender).await
-        });
-        if rx.await.is_ok() && room_state == RoomState::Gameing {
-            info!("{room_id} | Broadcast | GameStart | {0:?}", room.gconfig);
-            room.game_state.game_start();
-            let _ = br_sender.send(ResponseModel::GameStart {
-                config: room.gconfig.clone(),
-            });
-        }
+        tokio::spawn(async move { broadcast_action(room_id.clone(), br_recver, ws_sender).await });
     } else {
         let err_mes = format!("Room {} does not exist,{:?}", room_id, player);
         info!("{room_id} | Response | InvalidRequest, {err_mes:?}");
@@ -265,7 +274,7 @@ async fn leave_room(room_id: &Option<String>, player: &Option<Player>) {
         let mut rooms = ROOMS.lock().await;
         if let Some(room) = rooms.get_mut(room_id) {
             let mut rooms_senders = ROOMS_SENDERS.lock().await;
-            match room.remove_player(&player_id) {
+            match room.pop_player(&player_id) {
                 RoomState::Logout => {
                     info!("{room_id} | XXXXXX | Last PlayerLeave, Drop, {player_id}");
                     rooms.remove(room_id);
@@ -274,7 +283,7 @@ async fn leave_room(room_id: &Option<String>, player: &Option<Player>) {
                 RoomState::Waiting => {
                     info!("{room_id} | Broadcast | PlayerLeave, {player_id}");
                     let br_sender = rooms_senders.get_mut(room_id).unwrap();
-                    let _ = br_sender.send(ResponseModel::PlayerLeave {
+                    let _ = br_sender.send(ResponseModel::PlayerLeft {
                         player_id: player_id.clone(),
                     });
                 }
