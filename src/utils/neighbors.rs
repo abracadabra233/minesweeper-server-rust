@@ -88,16 +88,7 @@ mod tests {
     #[test]
     fn middle_cell_neighbors_3x4() {
         let neighbors = Neighbors::new(1, 2, 3, 4);
-        let expected = vec![
-            (0, 1),
-            (0, 2),
-            (0, 3),
-            (1, 1),
-            (1, 3),
-            (2, 1),
-            (2, 2),
-            (2, 3),
-        ];
+        let expected = vec![(0, 1), (0, 2), (0, 3), (1, 1), (1, 3), (2, 1), (2, 2), (2, 3)];
         let result: Vec<(usize, usize)> = neighbors.collect();
         assert_eq!(result.len(), expected.len());
         for neighbor in expected {

@@ -1,10 +1,8 @@
-use crate::utils::{neighbors::Neighbors, show_matrix};
+use crate::utils::{neighbors::Neighbors, show_matrix, Point};
 use rand::prelude::SliceRandom;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::collections::HashSet;
-use std::time::Instant;
 
-#[derive(Debug, Clone)]
 pub struct GameBoard {
     // ------------- static data -------------
     pub cols: usize,                 // 棋盘宽度
@@ -16,60 +14,32 @@ pub struct GameBoard {
     // ------------- dynamic record -------------
     pub cell_states: Vec<Vec<CellState>>, // 每个格子的状态
     pub around_flags: Vec<Vec<u8>>,       // 每个格子周围旗的个数
-    pub n_open: usize,                    // 用户已经打开的个数
-    pub n_step: usize,                    // 用户步数
-    pub err_flags: Vec<Point>,            // 用户错误标记的位置
-    pub start_time: Instant,              // 游戏开始时间
+    pub n_open: usize,                    // 已经打开的个数
     pub is_first_op: bool,                // 第一次玩家点击
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CellState {
     Closed,                 // 单元格未打开
     Opened { a_mines: u8 }, // 单元格已打开
     Flagged,                // 单元格被标记为雷
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Debug, Clone)]
 pub struct CellInfo {
     pub x: usize,
     pub y: usize,
     pub status: CellState,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct Point {
-    pub x: usize,
-    pub y: usize,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum OpResult {
-    // 操作成功，返回操作影响的cell信息
-    Ok {
-        cells: Vec<CellInfo>,
-    },
-    // 游戏失败，踩到雷
-    Over {
-        mines: Vec<Point>,
-        err_flags: Vec<Point>,
-        err_mine: Point,
-    },
-    // 游戏胜利
-    Win {
-        mines: Vec<Point>,
-        n_time: u64,
-        n_step: usize,
-    },
+    Ok { cells: Vec<CellInfo> },
+    Over { all_mines: Vec<Point>, err_mine: Point },
+    Win { all_mines: Vec<Point> },
 }
 
 impl GameBoard {
-    pub fn game_start(&mut self) {
-        self.start_time = Instant::now();
-    }
-
     pub fn op(&mut self, x: usize, y: usize, is_flaged: bool) -> OpResult {
-        self.n_step += 1;
         match self.cell_states[x][y] {
             CellState::Closed => match is_flaged {
                 true => self.mark_cell(x, y),
@@ -112,9 +82,7 @@ impl GameBoard {
 
     pub fn cancel_mark_cell(&mut self, x: usize, y: usize) -> OpResult {
         self.cell_states[x][y] = CellState::Closed;
-        if !self.mine_states[x][y] {
-            self.err_flags.retain(|p| p.x != x || p.y != y);
-        }
+
         let neighbors: Neighbors = Neighbors::new(x, y, self.rows, self.cols);
         for (drow, dcol) in neighbors {
             self.around_flags[drow][dcol] -= 1;
@@ -131,9 +99,7 @@ impl GameBoard {
 
     pub fn mark_cell(&mut self, x: usize, y: usize) -> OpResult {
         self.cell_states[x][y] = CellState::Flagged;
-        if !self.mine_states[x][y] {
-            self.err_flags.push(Point { x, y });
-        }
+
         let neighbors: Neighbors = Neighbors::new(x, y, self.rows, self.cols);
         for (drow, dcol) in neighbors {
             self.around_flags[drow][dcol] += 1;
@@ -150,8 +116,7 @@ impl GameBoard {
     pub fn open_cell(&mut self, x: usize, y: usize) -> OpResult {
         if self.mine_states[x][y] {
             return OpResult::Over {
-                mines: self.mines_point(),
-                err_flags: self.err_flags.clone(),
+                all_mines: self.mines_point(),
                 err_mine: Point { x, y },
             };
         }
@@ -174,9 +139,7 @@ impl GameBoard {
         }
         if self.is_win() {
             OpResult::Win {
-                mines: self.mines_point(),
-                n_time: Instant::now().duration_since(self.start_time).as_secs(),
-                n_step: self.n_step,
+                all_mines: self.mines_point(),
             }
         } else {
             OpResult::Ok { cells: op_results }
@@ -210,10 +173,7 @@ impl GameBoard {
             cell_states: vec![vec![CellState::Closed; cols]; rows],
             around_mines: vec![vec![0; cols]; rows],
             around_flags: vec![vec![0; cols]; rows],
-            err_flags: Vec::new(),
-            n_step: 0,
             n_open: 0,
-            start_time: Instant::now(),
             is_first_op: true,
         };
         board

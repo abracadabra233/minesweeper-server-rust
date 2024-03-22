@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 pub mod neighbors;
 // use rand::{distributions::Alphanumeric, Rng};
 pub fn generate_room_id() -> String {
@@ -17,4 +18,10 @@ pub fn show_matrix<T: std::fmt::Display>(matrix: &[Vec<T>], name: &str) {
         }
         println!();
     }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Point {
+    pub x: usize,
+    pub y: usize,
 }
