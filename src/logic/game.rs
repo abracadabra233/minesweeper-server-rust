@@ -91,13 +91,24 @@ pub enum ServiceError {
     AbnormalDisconnection,
     #[error("ServiceError: Connection exception")]
     ConnectionException,
-    // ================== InvalidRequest ==================
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum InvalidRequest {
     #[error("InvalidRequest: Parsing message failed")]
     InvalidMessage,
     #[error("InvalidRequest: Room is already full")]
     RoomIsFulled,
-    #[error("InvalidRequest: Room  does not exist")]
+    #[error("InvalidRequest: Room does not exist")]
     RoomNotExist,
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum ApplicationError {
+    #[error("Service error: {0}")]
+    ServiceError(#[from] ServiceError),
+    #[error("Request error: {0}")]
+    InvalidRequest(#[from] InvalidRequest),
 }
 
 type WsSender = SplitSink<WebSocket, Message>;
@@ -108,52 +119,54 @@ async fn handle_message(
     c_ws_sender: &mut Option<WsSender>,
     c_player: &mut Option<Player>,
     c_room_id: &mut Option<String>,
-) -> Result<(), ServiceError> {
+) -> Result<(), ApplicationError> {
     let request_model: Result<RequestModel, _> = serde_json::from_str(&message);
+    info!("Request | {request_model:?} ");
     match request_model {
         Ok(RequestModel::RoomCreate { player, config }) => {
             if let Some(ws_sender) = c_ws_sender.take() {
                 if c_player.is_none() && c_room_id.is_none() {
-                    info!("None | Request | InitRoom, {player:?}, {config:?}");
+                    // info!("Request | InitRoom, {player:?}, {config:?}");
                     let room_id = init_room(&config).await;
                     *c_player = Some(player);
                     *c_room_id = Some(room_id);
                     join_room(ws_sender, c_room_id.as_ref().unwrap(), c_player.as_ref().unwrap()).await
                 } else {
-                    Err(ServiceError::RoomStillExists)
+                    // Err(ApplicationError::ServiceError(ServiceError::RoomStillExists))
+                    Err(ServiceError::RoomStillExists.into())
                 }
             } else {
-                Err(ServiceError::AbnormalDisconnection)
+                Err(ServiceError::AbnormalDisconnection.into())
             }
         }
         Ok(RequestModel::RoomJoin { room_id, player }) => {
             if let Some(ws_sender) = c_ws_sender.take() {
                 if c_player.is_none() && c_room_id.is_none() {
-                    info!("{room_id} | Request | JoinRoom, {player:?}");
+                    // info!("{room_id} | Request | JoinRoom, {player:?}");
                     *c_player = Some(player);
                     *c_room_id = Some(room_id);
                     join_room(ws_sender, c_room_id.as_ref().unwrap(), c_player.as_ref().unwrap()).await
                 } else {
-                    Err(ServiceError::RoomStillExists)
+                    Err(ServiceError::RoomStillExists.into())
                 }
             } else {
-                Err(ServiceError::AbnormalDisconnection)
+                Err(ServiceError::AbnormalDisconnection.into())
             }
         }
         Ok(RequestModel::PlayerOperation { action }) => {
             if let (Some(room_id), Some(player)) = (&c_room_id, &c_player) {
-                info!("{room_id} | Request | GAction, {}, {action:?}", player.id);
+                // info!("{room_id} | Request | GAction, {}, {action:?}", player.id);
                 handle_action(room_id, &player.id, &action).await
             } else {
-                Err(ServiceError::RoomOrPlayerLost)
+                Err(ServiceError::RoomOrPlayerLost.into())
             }
         }
         Ok(RequestModel::PlayerStatusSet { is_ready }) => {
             if let (Some(room_id), Some(player)) = (&c_room_id, &c_player) {
-                info!("{room_id} | Request | PlayerStatusSet, {},{is_ready}", player.id);
+                // info!("{room_id} | Request | PlayerStatusSet, {},{is_ready}", player.id);
                 set_player_status(room_id, &player.id, is_ready).await
             } else {
-                Err(ServiceError::RoomOrPlayerLost)
+                Err(ServiceError::RoomOrPlayerLost.into())
             }
         }
         Err(e) => {
@@ -164,7 +177,7 @@ async fn handle_message(
                 let _ = ws_sender.send(Message::Close(None)).await;
             }
             leave_room(&c_room_id, &c_player).await;
-            Err(ServiceError::InvalidMessage)
+            Err(InvalidRequest::InvalidMessage.into())
         }
     }
 }
@@ -203,11 +216,23 @@ pub async fn handle_socket(socket: WebSocket) {
 }
 
 async fn broadcast_action(room_id: String, mut br_recver: BrRecver, mut ws_sender: WsSender) {
-    while let Ok(response) = br_recver.recv().await {
-        let resp_body = serde_json::to_string(&response).unwrap();
-        match ws_sender.send(Message::Text(resp_body)).await {
-            Ok(_) => {}
-            Err(_) => break,
+    loop {
+        match br_recver.recv().await {
+            Ok(response) => {
+                info!("Broadcast | {response:?} ");
+                let resp_body = serde_json::to_string(&response).unwrap();
+                match ws_sender.send(Message::Text(resp_body)).await {
+                    Ok(_) => {}
+                    Err(_) => {
+                        error!("{:?} | Error | Broadcast exception", room_id);
+                        break;
+                    }
+                }
+            }
+            Err(e) => {
+                error!("{:?} | Error | Receiver error: {:?}", room_id, e);
+                break;
+            }
         }
     }
     info!("{room_id:?} | Info | release resource");
@@ -217,19 +242,22 @@ async fn set_player_status(
     room_id: &String,
     player_id: &String,
     is_ready: bool,
-) -> Result<(), ServiceError> {
+) -> Result<(), ApplicationError> {
     let mut rooms = ROOMS.lock().await;
     if let Some(room) = rooms.get_mut(room_id) {
         let room_state = room.set_player_status(player_id, is_ready);
-        info!("{room_id} | Broadcast | PlayerStatusSet, {player_id:?}, {is_ready:?},{room_state:?}");
+        // info!("{room_id} | Broadcast | PlayerStatusSet, {player_id:?}, {is_ready:?},{room_state:?}");
         let mut rooms_senders = ROOMS_SENDERS.lock().await;
-        let br_sender = rooms_senders.get_mut(room_id).unwrap();
-        let _ = br_sender.send(ResponseModel::PlayerStatusSet {
-            player_id: player_id.clone(),
-            is_ready,
-        });
+        let br_sender: &mut broadcast::Sender<ResponseModel> = rooms_senders.get_mut(room_id).unwrap();
+        // TODO: If there is only one person in the room, sending two consecutive messages will cause a bug:  Receiver error: Lagged(1)
+        if room.gconfig.n_player != 1 {
+            let _ = br_sender.send(ResponseModel::PlayerStatusSet {
+                player_id: player_id.clone(),
+                is_ready,
+            });
+        }
         if room_state == RoomState::Gameing {
-            info!("{room_id} | Broadcast | GameStart | {0:?}", room.gconfig);
+            // info!("{room_id} | Broadcast | GameStart | {0:?}", room.gconfig);
             room.start_game();
             let _ = br_sender.send(ResponseModel::GameStart {
                 config: room.gconfig.clone(),
@@ -238,7 +266,7 @@ async fn set_player_status(
         Ok(())
     } else {
         error!("{room_id:?} | Error | Room does not exist while {player_id:?} gaming");
-        Err(ServiceError::RoomOrPlayerLost)
+        Err(ServiceError::RoomOrPlayerLost.into())
     }
 }
 
@@ -246,7 +274,7 @@ async fn handle_action(
     room_id: &String,
     player_id: &String,
     action: &GameAction,
-) -> Result<(), ServiceError> {
+) -> Result<(), ApplicationError> {
     let mut rooms = ROOMS.lock().await;
     if let Some(room) = rooms.get_mut(room_id) {
         let op_res = room.op(&player_id, action);
@@ -260,7 +288,7 @@ async fn handle_action(
         Ok(())
     } else {
         error!("{room_id:?} | Error | Room does not exist while {player_id:?} gaming");
-        Err(ServiceError::RoomOrPlayerLost)
+        Err(ServiceError::RoomOrPlayerLost.into())
     }
 }
 
@@ -276,7 +304,11 @@ async fn init_room(config: &GameConfig) -> String {
     room_id
 }
 
-async fn join_room(mut ws_sender: WsSender, room_id: &String, player: &Player) -> Result<(), ServiceError> {
+async fn join_room(
+    mut ws_sender: WsSender,
+    room_id: &String,
+    player: &Player,
+) -> Result<(), ApplicationError> {
     let mut rooms = ROOMS.lock().await;
     if let Some(room) = rooms.get_mut(room_id) {
         if room.is_full() {
@@ -286,7 +318,7 @@ async fn join_room(mut ws_sender: WsSender, room_id: &String, player: &Player) -
             let error_mes: String = serde_json::to_string(&error_mes).unwrap();
             ws_sender.send(Message::Text(error_mes)).await.unwrap();
             let _ = ws_sender.send(Message::Close(None)).await;
-            return Err(ServiceError::RoomIsFulled);
+            return Err(InvalidRequest::RoomIsFulled.into());
         }
         // Tell the client which players are already in the current room
         let response = ResponseModel::JoinSuccess {
@@ -318,7 +350,7 @@ async fn join_room(mut ws_sender: WsSender, room_id: &String, player: &Player) -
         let error_mes = serde_json::to_string(&error_mes).unwrap();
         ws_sender.send(Message::Text(error_mes)).await.unwrap();
         let _ = ws_sender.send(Message::Close(None)).await;
-        Err(ServiceError::RoomNotExist)
+        Err(InvalidRequest::RoomNotExist.into())
     }
 }
 
