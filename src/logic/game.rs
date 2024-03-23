@@ -189,7 +189,7 @@ pub async fn handle_socket(socket: WebSocket) {
     while let Some(msg) = ws_recver.next().await {
         match msg {
             Ok(Message::Close(_)) => {
-                info!("{cur_room_id:?} | Request | Close, {cur_player:?}");
+                info!("Request | Close | {cur_room_id:?} {cur_player:?}");
                 leave_room(&cur_room_id, &cur_player).await;
                 break;
             }
@@ -197,14 +197,14 @@ pub async fn handle_socket(socket: WebSocket) {
                 let message = message.into_text().unwrap();
                 match handle_message(message, &mut cur_ws_sender, &mut cur_player, &mut cur_room_id).await {
                     Err(e) => {
-                        error!("{cur_room_id:?} | {e}");
+                        error!("{e}");
                         break;
                     }
                     Ok(_) => {}
                 }
             }
             Err(e) => {
-                error!("{cur_room_id:?} | Error | Connection exception:{e}");
+                error!("WebSocket Connection exception:{e} {cur_room_id:?}");
                 if let Some(mut ws_sender) = cur_ws_sender.take() {
                     let _ = ws_sender.send(Message::Close(None)).await;
                 }
@@ -224,18 +224,18 @@ async fn broadcast_action(room_id: String, mut br_recver: BrRecver, mut ws_sende
                 match ws_sender.send(Message::Text(resp_body)).await {
                     Ok(_) => {}
                     Err(_) => {
-                        error!("{:?} | Error | Broadcast exception", room_id);
+                        error!("{room_id:?} | Error | Broadcast exception",);
                         break;
                     }
                 }
             }
             Err(e) => {
-                error!("{:?} | Error | Receiver error: {:?}", room_id, e);
+                warn!("{:?} | Error | Receiver error: {:?}", room_id, e);
                 break;
             }
         }
     }
-    info!("{room_id:?} | Info | release resource");
+    info!("Info | release resource {room_id:?} ");
 }
 
 async fn set_player_status(
@@ -249,7 +249,6 @@ async fn set_player_status(
         // info!("{room_id} | Broadcast | PlayerStatusSet, {player_id:?}, {is_ready:?},{room_state:?}");
         let mut rooms_senders = ROOMS_SENDERS.lock().await;
         let br_sender: &mut broadcast::Sender<ResponseModel> = rooms_senders.get_mut(room_id).unwrap();
-        // TODO: If there is only one person in the room, sending two consecutive messages will cause a bug:  Receiver error: Lagged(1)
         if room.gconfig.n_player != 1 {
             let _ = br_sender.send(ResponseModel::PlayerStatusSet {
                 player_id: player_id.clone(),
@@ -278,7 +277,7 @@ async fn handle_action(
     let mut rooms = ROOMS.lock().await;
     if let Some(room) = rooms.get_mut(room_id) {
         let op_res = room.op(&player_id, action);
-        info!("{room_id} | Broadcast | GameOpRes, {action:?}, {op_res:?}");
+        // info!("{room_id} | Broadcast | GameOpRes, {action:?}, {op_res:?}");
         let mut rooms_senders = ROOMS_SENDERS.lock().await;
         let br_sender = rooms_senders.get_mut(room_id).unwrap();
         let _ = br_sender.send(ResponseModel::GameOpRes {
@@ -298,7 +297,7 @@ async fn init_room(config: &GameConfig) -> String {
     let mut rooms = ROOMS.lock().await;
     rooms.insert(room_id.clone(), room);
 
-    let (br_sender, _) = broadcast::channel(config.n_player);
+    let (br_sender, _) = broadcast::channel(16);
     let mut rooms_senders = ROOMS_SENDERS.lock().await;
     rooms_senders.insert(room_id.to_string(), br_sender);
     room_id
@@ -313,7 +312,7 @@ async fn join_room(
     if let Some(room) = rooms.get_mut(room_id) {
         if room.is_full() {
             let err_mes = format!("Room {} is already full,{:?}", room_id, player);
-            info!("{room_id} | Response | InvalidRequest, {err_mes:?}");
+            info!("Response | InvalidRequest, {err_mes:?}");
             let error_mes = ResponseModel::InvalidRequest { error: err_mes };
             let error_mes: String = serde_json::to_string(&error_mes).unwrap();
             ws_sender.send(Message::Text(error_mes)).await.unwrap();
@@ -326,11 +325,11 @@ async fn join_room(
             room_id: room_id.clone(),
         };
         let response = serde_json::to_string(&response).unwrap();
-        info!("{room_id} | Response | JoinSuccess, {player:?}");
+        info!("Response | JoinSuccess, {room_id} {player:?}");
         ws_sender.send(Message::Text(response)).await.unwrap();
 
         // Broadcast to players in the current room with new players joining
-        info!("{room_id} | Broadcast | PlayerJoin, {player:?}");
+        // info!("{room_id} | Broadcast | PlayerJoin, {player:?}");
         let mut rooms_senders = ROOMS_SENDERS.lock().await;
         let br_sender = rooms_senders.get_mut(room_id).unwrap();
         let _ = br_sender.send(ResponseModel::PlayerJoin {
@@ -345,7 +344,7 @@ async fn join_room(
         Ok(())
     } else {
         let err_mes = format!("Room {} does not exist,{:?}", room_id, player);
-        info!("{room_id} | Response | InvalidRequest, {err_mes:?}");
+        info!("Response | InvalidRequest, {err_mes:?}");
         let error_mes = ResponseModel::InvalidRequest { error: err_mes };
         let error_mes = serde_json::to_string(&error_mes).unwrap();
         ws_sender.send(Message::Text(error_mes)).await.unwrap();
@@ -362,12 +361,12 @@ async fn leave_room(room_id: &Option<String>, player: &Option<Player>) {
             let mut rooms_senders = ROOMS_SENDERS.lock().await;
             match room.pop_player(&player_id) {
                 RoomState::Logout => {
-                    info!("{room_id} | XXXXXX | Last PlayerLeave, Drop, {player_id}");
+                    info!("Info | Last PlayerLeave, Drop,{room_id} {player_id}");
                     rooms.remove(room_id);
                     rooms_senders.remove(room_id);
                 }
                 RoomState::Waiting => {
-                    info!("{room_id} | Broadcast | PlayerLeave, {player_id}");
+                    // info!("{room_id} | Broadcast | PlayerLeave, {player_id}");
                     let br_sender = rooms_senders.get_mut(room_id).unwrap();
                     let _ = br_sender.send(ResponseModel::PlayerLeft {
                         player_id: player_id.clone(),
