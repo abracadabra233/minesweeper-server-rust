@@ -1,6 +1,8 @@
 use crate::logic::room::{OpResponse, Room, RoomState};
 use crate::utils::generate_room_id;
 use axum::extract::ws::{Message, WebSocket};
+use axum::extract::WebSocketUpgrade;
+use axum::response::Response;
 use futures::stream::StreamExt;
 use futures_util::{sink::SinkExt, stream::SplitSink};
 use lazy_static::lazy_static;
@@ -91,6 +93,10 @@ pub enum ServiceError {
     AbnormalDisconnection,
     #[error("ServiceError: Connection exception")]
     ConnectionException,
+    #[error("ServiceError: Broadcast exception while ws_sender")]
+    BroadSendException,
+    #[error("ServiceError: Broadcast exception while br_recver")]
+    BroadRecvException,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -105,14 +111,18 @@ pub enum InvalidRequest {
 
 #[derive(thiserror::Error, Debug)]
 pub enum ApplicationError {
-    #[error("Service error: {0}")]
+    #[error("{0}")]
     ServiceError(#[from] ServiceError),
-    #[error("Request error: {0}")]
+    #[error("{0}")]
     InvalidRequest(#[from] InvalidRequest),
 }
 
 type WsSender = SplitSink<WebSocket, Message>;
 type BrRecver = broadcast::Receiver<ResponseModel>;
+
+pub async fn ws_handler(ws: WebSocketUpgrade) -> Response {
+    ws.on_upgrade(handle_socket)
+}
 
 async fn handle_message(
     message: String,
@@ -126,13 +136,11 @@ async fn handle_message(
         Ok(RequestModel::RoomCreate { player, config }) => {
             if let Some(ws_sender) = c_ws_sender.take() {
                 if c_player.is_none() && c_room_id.is_none() {
-                    // info!("Request | InitRoom, {player:?}, {config:?}");
                     let room_id = init_room(&config).await;
                     *c_player = Some(player);
                     *c_room_id = Some(room_id);
                     join_room(ws_sender, c_room_id.as_ref().unwrap(), c_player.as_ref().unwrap()).await
                 } else {
-                    // Err(ApplicationError::ServiceError(ServiceError::RoomStillExists))
                     Err(ServiceError::RoomStillExists.into())
                 }
             } else {
@@ -174,7 +182,7 @@ async fn handle_message(
             if let Some(mut ws_sender) = c_ws_sender.take() {
                 let resp_body = serde_json::to_string(&e.to_string()).unwrap();
                 ws_sender.send(Message::Text(resp_body)).await.unwrap();
-                let _ = ws_sender.send(Message::Close(None)).await;
+                let _ = ws_sender.close().await;
             }
             leave_room(&c_room_id, &c_player).await;
             Err(InvalidRequest::InvalidMessage.into())
@@ -189,7 +197,7 @@ pub async fn handle_socket(socket: WebSocket) {
     while let Some(msg) = ws_recver.next().await {
         match msg {
             Ok(Message::Close(_)) => {
-                info!("Request | Close | {cur_room_id:?} {cur_player:?}");
+                info!("Request Connection Close | {cur_room_id:?} {cur_player:?}");
                 leave_room(&cur_room_id, &cur_player).await;
                 break;
             }
@@ -197,16 +205,19 @@ pub async fn handle_socket(socket: WebSocket) {
                 let message = message.into_text().unwrap();
                 match handle_message(message, &mut cur_ws_sender, &mut cur_player, &mut cur_room_id).await {
                     Err(e) => {
-                        error!("{e}");
+                        match e {
+                            ApplicationError::InvalidRequest(_) => info!("{e}"),
+                            ApplicationError::ServiceError(_) => error!("{e}"),
+                        }
                         break;
                     }
                     Ok(_) => {}
                 }
             }
             Err(e) => {
-                error!("WebSocket Connection exception:{e} {cur_room_id:?}");
+                info!("Request Connection exception | {cur_room_id:?} {e:?}");
                 if let Some(mut ws_sender) = cur_ws_sender.take() {
-                    let _ = ws_sender.send(Message::Close(None)).await;
+                    let _ = ws_sender.close().await;
                 }
                 leave_room(&cur_room_id, &cur_player).await;
                 break;
@@ -216,26 +227,26 @@ pub async fn handle_socket(socket: WebSocket) {
 }
 
 async fn broadcast_action(room_id: String, mut br_recver: BrRecver, mut ws_sender: WsSender) {
-    loop {
+    let broadcast_res: Result<(), ServiceError> = loop {
         match br_recver.recv().await {
             Ok(response) => {
                 info!("Broadcast | {response:?} ");
                 let resp_body = serde_json::to_string(&response).unwrap();
                 match ws_sender.send(Message::Text(resp_body)).await {
                     Ok(_) => {}
-                    Err(_) => {
-                        error!("{room_id:?} | Error | Broadcast exception",);
-                        break;
-                    }
+                    Err(_) => break Err(ServiceError::BroadSendException.into()),
                 }
             }
-            Err(e) => {
-                warn!("{:?} | Error | Receiver error: {:?}", room_id, e);
-                break;
+            Err(broadcast::error::RecvError::Lagged(_)) => {
+                break Err(ServiceError::BroadRecvException.into())
             }
+            Err(broadcast::error::RecvError::Closed) => break Ok(()),
         }
+    };
+    match broadcast_res {
+        Ok(_) => info!("Broadcast End | release resource {room_id:?} "),
+        Err(e) => error!("{e}"),
     }
-    info!("Info | release resource {room_id:?} ");
 }
 
 async fn set_player_status(
@@ -316,7 +327,7 @@ async fn join_room(
             let error_mes = ResponseModel::InvalidRequest { error: err_mes };
             let error_mes: String = serde_json::to_string(&error_mes).unwrap();
             ws_sender.send(Message::Text(error_mes)).await.unwrap();
-            let _ = ws_sender.send(Message::Close(None)).await;
+            let _ = ws_sender.close().await;
             return Err(InvalidRequest::RoomIsFulled.into());
         }
         // Tell the client which players are already in the current room
@@ -348,7 +359,7 @@ async fn join_room(
         let error_mes = ResponseModel::InvalidRequest { error: err_mes };
         let error_mes = serde_json::to_string(&error_mes).unwrap();
         ws_sender.send(Message::Text(error_mes)).await.unwrap();
-        let _ = ws_sender.send(Message::Close(None)).await;
+        let _ = ws_sender.close().await;
         Err(InvalidRequest::RoomNotExist.into())
     }
 }

@@ -1,7 +1,8 @@
+use crate::logic::board::CellState::{Closed, Flagged};
 use crate::utils::{neighbors::Neighbors, show_matrix, Point};
 use rand::prelude::SliceRandom;
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 pub struct GameBoard {
     // ------------- static data -------------
@@ -34,35 +35,54 @@ pub struct CellInfo {
 
 pub enum OpResult {
     Ok { cells: Vec<CellInfo> },
-    Over { all_mines: Vec<Point>, err_mine: Point },
-    Win { all_mines: Vec<Point> },
+    Over { mines: Vec<Point>, mine: Point },
+    Win { mines: Vec<Point>, cells: Vec<CellInfo> },
 }
 
 impl GameBoard {
-    pub fn op(&mut self, x: usize, y: usize, is_flaged: bool) -> OpResult {
-        match self.cell_states[x][y] {
-            CellState::Closed => match is_flaged {
-                true => self.mark_cell(x, y),
-                false => {
+    pub fn handle_operation(&mut self, x: usize, y: usize, is_flagged: bool) -> OpResult {
+        if is_flagged {
+            match self.cell_states[x][y] {
+                CellState::Closed => self.toggle_cell_flag(x, y, true),
+                _ => OpResult::Ok { cells: vec![] },
+            }
+        } else {
+            match self.cell_states[x][y] {
+                CellState::Closed => {
                     if self.is_first_op {
                         self.place_mines(x, y);
                         self.is_first_op = false;
                     }
                     self.open_cell(x, y)
                 }
-            },
-            CellState::Flagged => self.cancel_mark_cell(x, y),
-            CellState::Opened { a_mines: _ } => {
-                if self.around_mines[x][y] == self.around_flags[x][y] {
-                    self.open_around_cell(x, y)
-                } else {
-                    OpResult::Ok { cells: vec![] }
+                CellState::Flagged => self.toggle_cell_flag(x, y, false),
+                CellState::Opened { a_mines: _ } => {
+                    if self.around_mines[x][y] == self.around_flags[x][y] {
+                        self.open_around_cell(x, y)
+                    } else {
+                        OpResult::Ok { cells: vec![] }
+                    }
                 }
             }
         }
     }
 
-    pub fn open_around_cell(&mut self, x: usize, y: usize) -> OpResult {
+    fn toggle_cell_flag(&mut self, x: usize, y: usize, flag: bool) -> OpResult {
+        self.cell_states[x][y] = if flag { Flagged } else { Closed };
+
+        let adjust_amount = if flag { 1 } else { -1 };
+        let neighbors: Neighbors = Neighbors::new(x, y, self.rows, self.cols);
+        neighbors.for_each(|(drow, dcol)| {
+            self.around_flags[drow][dcol] =
+                ((self.around_flags[drow][dcol] as isize) + adjust_amount) as u8;
+        });
+
+        let status = self.cell_states[x][y];
+        let cells = vec![CellInfo { x, y, status }];
+        OpResult::Ok { cells }
+    }
+
+    fn open_around_cell(&mut self, x: usize, y: usize) -> OpResult {
         let mut op_results = vec![];
         let neighbors: Neighbors = Neighbors::new(x, y, self.rows, self.cols);
         for (drow, dcol) in neighbors {
@@ -80,66 +100,26 @@ impl GameBoard {
         OpResult::Ok { cells: op_results }
     }
 
-    pub fn cancel_mark_cell(&mut self, x: usize, y: usize) -> OpResult {
-        self.cell_states[x][y] = CellState::Closed;
-
-        let neighbors: Neighbors = Neighbors::new(x, y, self.rows, self.cols);
-        for (drow, dcol) in neighbors {
-            self.around_flags[drow][dcol] -= 1;
-        }
-
-        OpResult::Ok {
-            cells: vec![CellInfo {
-                x,
-                y,
-                status: CellState::Closed,
-            }],
-        }
-    }
-
-    pub fn mark_cell(&mut self, x: usize, y: usize) -> OpResult {
-        self.cell_states[x][y] = CellState::Flagged;
-
-        let neighbors: Neighbors = Neighbors::new(x, y, self.rows, self.cols);
-        for (drow, dcol) in neighbors {
-            self.around_flags[drow][dcol] += 1;
-        }
-        OpResult::Ok {
-            cells: vec![CellInfo {
-                x,
-                y,
-                status: CellState::Flagged,
-            }],
-        }
-    }
-
-    pub fn open_cell(&mut self, x: usize, y: usize) -> OpResult {
+    fn open_cell(&mut self, x: usize, y: usize) -> OpResult {
         if self.mine_states[x][y] {
-            return OpResult::Over {
-                all_mines: self.mines_point(),
-                err_mine: Point { x, y },
-            };
+            let mines = self.mines_point();
+            let mine = Point { x, y };
+            return OpResult::Over { mines, mine };
         }
-        self.cell_states[x][y] = CellState::Opened {
-            a_mines: self.around_mines[x][y],
-        };
+        let a_mines = self.around_mines[x][y];
+        self.cell_states[x][y] = CellState::Opened { a_mines };
         self.n_open += 1;
-
-        let mut op_results = vec![CellInfo {
-            x,
-            y,
-            status: self.cell_states[x][y],
-        }];
+        let status = self.cell_states[x][y];
+        let mut op_results = vec![CellInfo { x, y, status }];
         if self.around_mines[x][y] == 0 {
-            let op_res = self.open_around_cell(x, y);
-            match op_res {
-                OpResult::Ok { cells } => op_results.extend(cells),
-                _ => {}
+            if let OpResult::Ok { cells } = self.open_around_cell(x, y) {
+                op_results.extend(cells);
             }
         }
         if self.is_win() {
             OpResult::Win {
-                all_mines: self.mines_point(),
+                mines: self.mines_point(),
+                cells: op_results,
             }
         } else {
             OpResult::Ok { cells: op_results }
@@ -152,8 +132,8 @@ impl GameBoard {
 
     fn mines_point(&mut self) -> Vec<Point> {
         let mut mine_coordinates = Vec::new();
-        for (y, row) in self.mine_states.iter().enumerate() {
-            for (x, &is_mine) in row.iter().enumerate() {
+        for (x, row) in self.mine_states.iter().enumerate() {
+            for (y, &is_mine) in row.iter().enumerate() {
                 if is_mine {
                     mine_coordinates.push(Point { x, y });
                 }
@@ -197,7 +177,11 @@ impl GameBoard {
                 self.around_mines[drow][dcol] += 1;
             }
         }
-        show_matrix(&self.around_mines, "around_mines");
-        show_matrix(&self.mine_states, "mine_states");
+
+        show_matrix::<u8, String>(&self.around_mines, "around_mines", &HashMap::new());
+        let mut replacements_for_mine_states = HashMap::new();
+        replacements_for_mine_states.insert(true, "💣".to_string());
+        replacements_for_mine_states.insert(false, "🚩".to_string());
+        show_matrix(&self.mine_states, "mine_states", &replacements_for_mine_states);
     }
 }

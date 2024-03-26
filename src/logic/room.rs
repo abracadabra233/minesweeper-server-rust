@@ -2,7 +2,7 @@ use super::board::{CellInfo, CellState, GameBoard, OpResult};
 use super::game::{GameAction, GameConfig, Player};
 use crate::utils::Point;
 use log::error;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::collections::HashMap;
 use std::time::Instant;
 use std::u32;
@@ -29,21 +29,22 @@ pub struct Room {
     pub id2opens: HashMap<String, u8>,  // 玩家打开格子数
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Debug, Clone)]
 pub struct WinInfo {
     pub id2steps: HashMap<String, u32>,
     pub id2flags: HashMap<String, u8>,
     pub id2opens: HashMap<String, u8>,
-    pub all_times: u64,
-    pub all_steps: usize,
-    pub all_mines: Vec<Point>,
+    pub duration: u64,
+    pub steps: usize,
+    pub mines: Vec<Point>,
+    pub cells: Vec<CellInfo>,
 }
 
 #[derive(Serialize, Debug, Clone)]
 pub enum OpResponse {
-    OpSuccess { cells: Vec<CellInfo> }, // 玩家操作后，需要改变的信息
-    GameOver { all_mines: Vec<Point>, err_mine: Point }, // 玩家输了
-    GameWin { win_info: WinInfo },      // 玩家赢了
+    OpSuccess { cells: Vec<CellInfo> },          // 玩家操作后，需要改变的信息
+    GameOver { mines: Vec<Point>, mine: Point }, // 玩家输了
+    GameWin { win_info: WinInfo },               // 玩家赢了
 }
 
 impl Room {
@@ -79,7 +80,7 @@ impl Room {
     }
 
     pub fn start_game(&mut self) {
-        self.start_time = Instant::now();
+        self.reset();
     }
 
     pub fn add_player(&mut self, player: Player) {
@@ -104,7 +105,7 @@ impl Room {
         } else {
             self.id2steps.insert(player_id.clone(), 1);
         }
-        let op_res = self.game_board.op(action.x, action.y, action.f);
+        let op_res = self.game_board.handle_operation(action.x, action.y, action.f);
 
         // ========================== record op res  ==========================
         match op_res {
@@ -133,36 +134,33 @@ impl Room {
                 // ========================== check is_valid ==========================
                 let counts = [closed_count, opened_count, flagged_count];
                 let non_zero_counts = counts.iter().filter(|&&count| count != 0).count();
-                let is_valid =
+                let mut is_valid =
                     non_zero_counts == 1 && (opened_count != 0 || closed_count == 1 || flagged_count == 1);
+                is_valid = is_valid || non_zero_counts == 0;
                 if !is_valid {
                     error!("Error: Invalid cell counts");
                 }
                 OpResponse::OpSuccess { cells }
             }
-            OpResult::Over { all_mines, err_mine } => {
-                self.reset();
-                OpResponse::GameOver { all_mines, err_mine }
-            }
-            OpResult::Win { all_mines } => {
-                self.reset();
-                OpResponse::GameWin {
-                    win_info: WinInfo {
-                        id2steps: self.id2steps.clone(),
-                        id2flags: self.id2flags.clone(),
-                        id2opens: self.id2opens.clone(),
-                        all_times: Instant::now().duration_since(self.start_time).as_secs(),
-                        all_steps: self.all_steps,
-                        all_mines,
-                    },
-                }
-            }
+            OpResult::Over { mines, mine } => OpResponse::GameOver { mines, mine },
+            OpResult::Win { mines, cells } => OpResponse::GameWin {
+                win_info: WinInfo {
+                    id2steps: self.id2steps.clone(),
+                    id2flags: self.id2flags.clone(),
+                    id2opens: self.id2opens.clone(),
+                    duration: Instant::now().duration_since(self.start_time).as_secs(),
+                    steps: self.all_steps,
+                    mines,
+                    cells,
+                },
+            },
         }
     }
     pub fn reset(&mut self) {
         for (_, value) in self.players.iter_mut() {
             value.is_ready = false;
         }
+        self.start_time = Instant::now();
         self.room_state = RoomState::Waiting;
         self.game_board = GameBoard::new(self.gconfig.cols, self.gconfig.rows, self.gconfig.mines);
         self.all_steps = 0;
