@@ -79,10 +79,6 @@ impl Room {
         self.players.len() == self.gconfig.n_player
     }
 
-    pub fn start_game(&mut self) {
-        self.reset();
-    }
-
     pub fn add_player(&mut self, player: Player) {
         self.players.insert(player.id.clone(), player);
     }
@@ -98,7 +94,7 @@ impl Room {
         self.room_state
     }
 
-    pub fn op(&mut self, player_id: &String, action: &GameAction) -> OpResponse {
+    pub fn handle_op(&mut self, player_id: &String, action: &GameAction) -> OpResponse {
         self.all_steps += 1;
         if let Some(n_step) = self.id2steps.get_mut(player_id) {
             *n_step += 1;
@@ -142,30 +138,41 @@ impl Room {
                 }
                 OpResponse::OpSuccess { cells }
             }
-            OpResult::Over { mines, mine } => OpResponse::GameOver { mines, mine },
-            OpResult::Win { mines, cells } => OpResponse::GameWin {
-                win_info: WinInfo {
-                    id2steps: self.id2steps.clone(),
-                    id2flags: self.id2flags.clone(),
-                    id2opens: self.id2opens.clone(),
-                    duration: Instant::now().duration_since(self.start_time).as_secs(),
-                    steps: self.all_steps,
-                    mines,
-                    cells,
-                },
-            },
+            OpResult::Over { mines, mine } => {
+                self.handle_game_end();
+                OpResponse::GameOver { mines, mine }
+            }
+            OpResult::Win { mines, cells } => {
+                self.handle_game_end();
+                OpResponse::GameWin {
+                    win_info: WinInfo {
+                        id2steps: self.id2steps.clone(),
+                        id2flags: self.id2flags.clone(),
+                        id2opens: self.id2opens.clone(),
+                        duration: Instant::now().duration_since(self.start_time).as_secs(),
+                        steps: self.all_steps,
+                        mines,
+                        cells,
+                    },
+                }
+            }
         }
     }
-    pub fn reset(&mut self) {
-        for (_, value) in self.players.iter_mut() {
-            value.is_ready = false;
-        }
-        self.start_time = Instant::now();
-        self.room_state = RoomState::Waiting;
+
+    pub fn handle_game_start(&mut self) {
+        self.room_state = RoomState::Gameing;
         self.game_board = GameBoard::new(self.gconfig.cols, self.gconfig.rows, self.gconfig.mines);
+        self.start_time = Instant::now();
         self.all_steps = 0;
         self.id2steps = HashMap::new();
         self.id2flags = HashMap::new();
         self.id2opens = HashMap::new();
+    }
+
+    pub fn handle_game_end(&mut self) {
+        for (_, value) in self.players.iter_mut() {
+            value.is_ready = false;
+        }
+        self.room_state = RoomState::Waiting;
     }
 }

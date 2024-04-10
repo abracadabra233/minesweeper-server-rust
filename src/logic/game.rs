@@ -48,25 +48,22 @@ impl fmt::Debug for Player {
 // 游戏设置
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct GameConfig {
-    pub cols: usize,  // 棋盘宽度
-    pub rows: usize,  // 棋盘高度
-    pub mines: usize, // 雷的总数
-    #[serde(default = "default_n_player")]
+    pub cols: usize,     // 棋盘宽度
+    pub rows: usize,     // 棋盘高度
+    pub mines: usize,    // 雷的总数
     pub n_player: usize, // 房间人数
-}
-
-fn default_n_player() -> usize {
-    2
 }
 
 // 客户端发送给服务端的消息
 #[derive(Deserialize, Debug, Clone)]
 #[serde(tag = "type")]
 enum RequestModel {
+    // TODO take RoomCreate RoomJoin Independently placed in the ws header
     RoomCreate { player: Player, config: GameConfig }, // 玩家创建房间
-    RoomJoin { room_id: String, player: Player },      // 玩家加入房间
+    RoomJoin { room_id: String, player: Player },      // 玩家加入房间,
     PlayerOperation { action: GameAction },            // 玩家操作
     PlayerStatusSet { is_ready: bool },                // 准备、取消准备
+    GameAgain,                                         // 重新开始游戏
 }
 
 // 服务端广播给客户端的消息
@@ -124,72 +121,7 @@ pub async fn ws_handler(ws: WebSocketUpgrade) -> Response {
     ws.on_upgrade(handle_socket)
 }
 
-async fn handle_message(
-    message: String,
-    c_ws_sender: &mut Option<WsSender>,
-    c_player: &mut Option<Player>,
-    c_room_id: &mut Option<String>,
-) -> Result<(), ApplicationError> {
-    let request_model: Result<RequestModel, _> = serde_json::from_str(&message);
-    info!("Request | {request_model:?} ");
-    match request_model {
-        Ok(RequestModel::RoomCreate { player, config }) => {
-            if let Some(ws_sender) = c_ws_sender.take() {
-                if c_player.is_none() && c_room_id.is_none() {
-                    let room_id = init_room(&config).await;
-                    *c_player = Some(player);
-                    *c_room_id = Some(room_id);
-                    join_room(ws_sender, c_room_id.as_ref().unwrap(), c_player.as_ref().unwrap()).await
-                } else {
-                    Err(ServiceError::RoomStillExists.into())
-                }
-            } else {
-                Err(ServiceError::AbnormalDisconnection.into())
-            }
-        }
-        Ok(RequestModel::RoomJoin { room_id, player }) => {
-            if let Some(ws_sender) = c_ws_sender.take() {
-                if c_player.is_none() && c_room_id.is_none() {
-                    // info!("{room_id} | Request | JoinRoom, {player:?}");
-                    *c_player = Some(player);
-                    *c_room_id = Some(room_id);
-                    join_room(ws_sender, c_room_id.as_ref().unwrap(), c_player.as_ref().unwrap()).await
-                } else {
-                    Err(ServiceError::RoomStillExists.into())
-                }
-            } else {
-                Err(ServiceError::AbnormalDisconnection.into())
-            }
-        }
-        Ok(RequestModel::PlayerOperation { action }) => {
-            if let (Some(room_id), Some(player)) = (&c_room_id, &c_player) {
-                // info!("{room_id} | Request | GAction, {}, {action:?}", player.id);
-                handle_action(room_id, &player.id, &action).await
-            } else {
-                Err(ServiceError::RoomOrPlayerLost.into())
-            }
-        }
-        Ok(RequestModel::PlayerStatusSet { is_ready }) => {
-            if let (Some(room_id), Some(player)) = (&c_room_id, &c_player) {
-                // info!("{room_id} | Request | PlayerStatusSet, {},{is_ready}", player.id);
-                set_player_status(room_id, &player.id, is_ready).await
-            } else {
-                Err(ServiceError::RoomOrPlayerLost.into())
-            }
-        }
-        Err(e) => {
-            warn!("{c_room_id:?} | InvalidRequest | Parsing message:{e}");
-            if let Some(mut ws_sender) = c_ws_sender.take() {
-                let resp_body = serde_json::to_string(&e.to_string()).unwrap();
-                ws_sender.send(Message::Text(resp_body)).await.unwrap();
-                let _ = ws_sender.close().await;
-            }
-            leave_room(&c_room_id, &c_player).await;
-            Err(InvalidRequest::InvalidMessage.into())
-        }
-    }
-}
-pub async fn handle_socket(socket: WebSocket) {
+async fn handle_socket(socket: WebSocket) {
     let (ws_sender, mut ws_recver) = socket.split();
     let mut cur_ws_sender: Option<SplitSink<WebSocket, Message>> = Some(ws_sender);
     let mut cur_room_id = None;
@@ -226,7 +158,77 @@ pub async fn handle_socket(socket: WebSocket) {
     }
 }
 
-async fn broadcast_action(room_id: String, mut br_recver: BrRecver, mut ws_sender: WsSender) {
+async fn handle_message(
+    message: String,
+    c_ws_sender: &mut Option<WsSender>,
+    c_player: &mut Option<Player>,
+    c_room_id: &mut Option<String>,
+) -> Result<(), ApplicationError> {
+    let request_model: Result<RequestModel, _> = serde_json::from_str(&message);
+    info!("Request | {request_model:?} ");
+    match request_model {
+        Ok(RequestModel::RoomCreate { player, config }) => {
+            if let Some(ws_sender) = c_ws_sender.take() {
+                if c_player.is_none() && c_room_id.is_none() {
+                    let room_id = handle_create(&config).await;
+                    *c_player = Some(player);
+                    *c_room_id = Some(room_id);
+                    handle_join(ws_sender, c_room_id.as_ref().unwrap(), c_player.as_ref().unwrap()).await
+                } else {
+                    Err(ServiceError::RoomStillExists.into())
+                }
+            } else {
+                Err(ServiceError::AbnormalDisconnection.into())
+            }
+        }
+        Ok(RequestModel::RoomJoin { room_id, player }) => {
+            if let Some(ws_sender) = c_ws_sender.take() {
+                if c_player.is_none() && c_room_id.is_none() {
+                    *c_player = Some(player);
+                    *c_room_id = Some(room_id);
+                    handle_join(ws_sender, c_room_id.as_ref().unwrap(), c_player.as_ref().unwrap()).await
+                } else {
+                    Err(ServiceError::RoomStillExists.into())
+                }
+            } else {
+                Err(ServiceError::AbnormalDisconnection.into())
+            }
+        }
+        Ok(RequestModel::GameAgain) => {
+            if let (Some(room_id), Some(player)) = (&c_room_id, &c_player) {
+                handle_game_again(room_id, &player.id).await
+            } else {
+                Err(ServiceError::RoomOrPlayerLost.into())
+            }
+        }
+        Ok(RequestModel::PlayerOperation { action }) => {
+            if let (Some(room_id), Some(player)) = (&c_room_id, &c_player) {
+                handle_action(room_id, &player.id, &action).await
+            } else {
+                Err(ServiceError::RoomOrPlayerLost.into())
+            }
+        }
+        Ok(RequestModel::PlayerStatusSet { is_ready }) => {
+            if let (Some(room_id), Some(player)) = (&c_room_id, &c_player) {
+                handle_status_set(room_id, &player.id, is_ready).await
+            } else {
+                Err(ServiceError::RoomOrPlayerLost.into())
+            }
+        }
+        Err(e) => {
+            warn!("{c_room_id:?} | InvalidRequest | Parsing message:{e}");
+            if let Some(mut ws_sender) = c_ws_sender.take() {
+                let resp_body = serde_json::to_string(&e.to_string()).unwrap();
+                ws_sender.send(Message::Text(resp_body)).await.unwrap();
+                let _ = ws_sender.close().await;
+            }
+            leave_room(&c_room_id, &c_player).await;
+            Err(InvalidRequest::InvalidMessage.into())
+        }
+    }
+}
+
+async fn broadcast_message(room_id: String, mut br_recver: BrRecver, mut ws_sender: WsSender) {
     let broadcast_res: Result<(), ServiceError> = loop {
         match br_recver.recv().await {
             Ok(response) => {
@@ -249,7 +251,7 @@ async fn broadcast_action(room_id: String, mut br_recver: BrRecver, mut ws_sende
     }
 }
 
-async fn set_player_status(
+async fn handle_status_set(
     room_id: &String,
     player_id: &String,
     is_ready: bool,
@@ -257,7 +259,6 @@ async fn set_player_status(
     let mut rooms = ROOMS.lock().await;
     if let Some(room) = rooms.get_mut(room_id) {
         let room_state = room.set_player_status(player_id, is_ready);
-        // info!("{room_id} | Broadcast | PlayerStatusSet, {player_id:?}, {is_ready:?},{room_state:?}");
         let mut rooms_senders = ROOMS_SENDERS.lock().await;
         let br_sender: &mut broadcast::Sender<ResponseModel> = rooms_senders.get_mut(room_id).unwrap();
         if room.gconfig.n_player != 1 {
@@ -267,8 +268,7 @@ async fn set_player_status(
             });
         }
         if room_state == RoomState::Gameing {
-            // info!("{room_id} | Broadcast | GameStart | {0:?}", room.gconfig);
-            room.start_game();
+            room.handle_game_start();
             let _ = br_sender.send(ResponseModel::GameStart {
                 config: room.gconfig.clone(),
             });
@@ -287,7 +287,7 @@ async fn handle_action(
 ) -> Result<(), ApplicationError> {
     let mut rooms = ROOMS.lock().await;
     if let Some(room) = rooms.get_mut(room_id) {
-        let op_res = room.op(&player_id, action);
+        let op_res = room.handle_op(&player_id, action);
         // info!("{room_id} | Broadcast | GameOpRes, {action:?}, {op_res:?}");
         let mut rooms_senders = ROOMS_SENDERS.lock().await;
         let br_sender = rooms_senders.get_mut(room_id).unwrap();
@@ -302,7 +302,39 @@ async fn handle_action(
     }
 }
 
-async fn init_room(config: &GameConfig) -> String {
+async fn handle_game_again(room_id: &String, player_id: &String) -> Result<(), ApplicationError> {
+    let mut rooms: tokio::sync::MutexGuard<'static, HashMap<String, Room>> = ROOMS.lock().await;
+    if let Some(room) = rooms.get_mut(room_id) {
+        let mut rooms_senders = ROOMS_SENDERS.lock().await;
+        let br_sender: &mut broadcast::Sender<ResponseModel> = rooms_senders.get_mut(room_id).unwrap();
+        if room.gconfig.n_player == 1 {
+            room.set_player_status(player_id, true);
+            room.handle_game_start();
+            let _ = br_sender.send(ResponseModel::GameStart {
+                config: room.gconfig.clone(),
+            });
+            Ok(())
+        } else {
+            let room_state = room.set_player_status(player_id, true);
+            let _ = br_sender.send(ResponseModel::PlayerStatusSet {
+                player_id: player_id.clone(),
+                is_ready: true,
+            });
+            if room_state == RoomState::Gameing {
+                room.handle_game_start();
+                let _ = br_sender.send(ResponseModel::GameStart {
+                    config: room.gconfig.clone(),
+                });
+            }
+            Ok(())
+        }
+    } else {
+        error!("{room_id:?} | Error | Room does not exist while {player_id:?} game again");
+        Err(ServiceError::RoomOrPlayerLost.into())
+    }
+}
+
+async fn handle_create(config: &GameConfig) -> String {
     let room_id: String = generate_room_id();
     let room = Room::new(room_id.clone(), config.clone());
     let mut rooms = ROOMS.lock().await;
@@ -314,7 +346,7 @@ async fn init_room(config: &GameConfig) -> String {
     room_id
 }
 
-async fn join_room(
+async fn handle_join(
     mut ws_sender: WsSender,
     room_id: &String,
     player: &Player,
@@ -340,7 +372,6 @@ async fn join_room(
         ws_sender.send(Message::Text(response)).await.unwrap();
 
         // Broadcast to players in the current room with new players joining
-        // info!("{room_id} | Broadcast | PlayerJoin, {player:?}");
         let mut rooms_senders = ROOMS_SENDERS.lock().await;
         let br_sender = rooms_senders.get_mut(room_id).unwrap();
         let _ = br_sender.send(ResponseModel::PlayerJoin {
@@ -351,7 +382,7 @@ async fn join_room(
         room.add_player(player.clone());
         let br_recver = br_sender.subscribe();
         let c_room_id = room_id.clone();
-        tokio::spawn(async move { broadcast_action(c_room_id, br_recver, ws_sender).await });
+        tokio::spawn(async move { broadcast_message(c_room_id, br_recver, ws_sender).await });
         Ok(())
     } else {
         let err_mes = format!("Room {} does not exist,{:?}", room_id, player);
