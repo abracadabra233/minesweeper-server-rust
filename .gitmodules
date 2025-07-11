@@ -1,0 +1,4 @@
+[submodule "dist"]
+	path = dist
+	url = git@gitee.com:abracadabra233/minesweeper-client-vue.git
+	branch = gh-pages
